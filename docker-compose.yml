@@ -1,0 +1,14 @@
+services:
+  coder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - https_proxy=${HTTPS_PROXY:-}
+    volumes:
+      - ./in:/in
+      - ./out:/out
+      - ./data:/data

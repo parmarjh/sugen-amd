@@ -54,3 +54,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+node_modules/
+dist/
+.playwright-cli/
+sugen-icd11.bundle

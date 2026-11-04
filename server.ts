@@ -10,6 +10,7 @@ import {
   scorePredictions,
   type CodedCandidate,
   type DevNote,
+  type EvaluationReport,
   type MmsEntry,
   type PredictionRow,
 } from './src/lib/icd11Engine.ts';
@@ -17,18 +18,51 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Ensure HTTPS_PROXY always has a safe default value if unset or empty
+const DEFAULT_HTTPS_PROXY = 'http://127.0.0.1:8080';
+const configuredHttpsProxy =
+  process.env.HTTPS_PROXY && process.env.HTTPS_PROXY.trim() !== ''
+    ? process.env.HTTPS_PROXY.trim()
+    : DEFAULT_HTTPS_PROXY;
+
 const DATA_DIR = path.resolve(__dirname, 'data');
 const MMS_PATH = path.join(DATA_DIR, 'mms-2026-01.json');
 const DEV_NOTES_PATH = path.join(DATA_DIR, 'dev_notes.jsonl');
+const GEN_NOTES_PATH = path.join(DATA_DIR, 'generalisation_notes.jsonl');
 const PREDICTIONS_OUT_PATH = path.join(DATA_DIR, 'predictions.jsonl');
+const BUNDLE_PATH = path.resolve(__dirname, 'sugen-icd11.bundle');
 
+let datasetLoaded = false;
 let mmsList: MmsEntry[] = [];
 const mmsByCode = new Map<string, MmsEntry>();
 const validCodes = new Set<string>();
 let devNotes: DevNote[] = [];
+let genNotes: DevNote[] = [];
 const chapterCounts: Record<string, number> = {};
 
-function loadDataset() {
+let cachedDevPipeline: { report: EvaluationReport; predRows: PredictionRow[] } | null = null;
+let cachedCombinedPipeline: { report: EvaluationReport; predRows: PredictionRow[] } | null = null;
+
+function parseJsonlFile(filePath: string): DevNote[] {
+  if (!fs.existsSync(filePath)) return [];
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+  const rows: DevNote[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      rows.push(JSON.parse(trimmed) as DevNote);
+    } catch {
+      // ignore malformed line
+    }
+  }
+  return rows;
+}
+
+function ensureDatasetLoaded() {
+  if (datasetLoaded) return;
+  datasetLoaded = true;
+
   if (fs.existsSync(MMS_PATH)) {
     const raw = fs.readFileSync(MMS_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as MmsEntry[];
@@ -45,28 +79,16 @@ function loadDataset() {
     }
   }
 
-  if (fs.existsSync(DEV_NOTES_PATH)) {
-    const lines = fs.readFileSync(DEV_NOTES_PATH, 'utf-8').split('\n');
-    devNotes = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        devNotes.push(JSON.parse(trimmed) as DevNote);
-      } catch {
-        // ignore malformed line
-      }
-    }
-  }
+  devNotes = parseJsonlFile(DEV_NOTES_PATH);
+  genNotes = parseJsonlFile(GEN_NOTES_PATH);
 }
 
-loadDataset();
-
-function runFullDevPipeline() {
+function evaluateNotesList(notes: DevNote[], writeToDisk: boolean) {
+  ensureDatasetLoaded();
   const predRows: PredictionRow[] = [];
   const candidatesById = new Map<string, CodedCandidate[]>();
 
-  for (const note of devNotes) {
+  for (const note of notes) {
     const candidates = predictIcd11Codes(note.text, mmsList, mmsByCode);
     candidatesById.set(note.id, candidates);
     predRows.push({
@@ -75,20 +97,34 @@ function runFullDevPipeline() {
     });
   }
 
-  // Persist predictions.jsonl so CLI score.py works out-of-the-box
-  try {
-    const jsonlContent =
-      predRows.map((r) => JSON.stringify(r)).join('\n') + '\n';
-    fs.writeFileSync(PREDICTIONS_OUT_PATH, jsonlContent, 'utf-8');
-  } catch {
-    // ignore write error on read-only fs
+  if (writeToDisk) {
+    try {
+      const jsonlContent =
+        predRows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+      fs.writeFileSync(PREDICTIONS_OUT_PATH, jsonlContent, 'utf-8');
+    } catch {
+      // ignore write error on read-only fs
+    }
   }
 
-  const report = scorePredictions(devNotes, predRows, validCodes, candidatesById);
+  const report = scorePredictions(notes, predRows, validCodes, candidatesById);
   return { report, predRows };
 }
 
-let cachedPipeline = runFullDevPipeline();
+function getDevPipeline(refresh = false) {
+  if (!cachedDevPipeline || refresh) {
+    cachedDevPipeline = evaluateNotesList(devNotes, true);
+  }
+  return cachedDevPipeline;
+}
+
+function getCombinedPipeline(refresh = false) {
+  if (!cachedCombinedPipeline || refresh) {
+    ensureDatasetLoaded();
+    cachedCombinedPipeline = evaluateNotesList([...devNotes, ...genNotes], false);
+  }
+  return cachedCombinedPipeline;
+}
 
 async function startServer() {
   const app = express();
@@ -97,20 +133,29 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (_req, res) => {
+    const pipeline = getDevPipeline(false);
     res.json({
       status: 'ok',
+      httpsProxy: configuredHttpsProxy,
       mmsCount: mmsList.length,
       devNotesCount: devNotes.length,
-      score: cachedPipeline.report.totalScore,
+      genNotesCount: genNotes.length,
+      score: pipeline.report.totalScore,
     });
   });
 
   app.get('/api/evaluation', (req, res) => {
-    if (req.query.refresh === '1') {
-      cachedPipeline = runFullDevPipeline();
-    }
+    ensureDatasetLoaded();
+    const refresh = req.query.refresh === '1';
+    const mode = req.query.dataset === 'combined' ? 'combined' : 'dev';
+    const activePipeline =
+      mode === 'combined'
+        ? getCombinedPipeline(refresh)
+        : getDevPipeline(refresh);
+
+    const allNotes = mode === 'combined' ? [...devNotes, ...genNotes] : devNotes;
     const goldMetadata: Record<string, MmsEntry> = {};
-    for (const note of devNotes) {
+    for (const note of allNotes) {
       for (const g of note.gold || []) {
         const norm = normalizeStem(g);
         if (norm && mmsByCode.has(norm)) {
@@ -120,11 +165,18 @@ async function startServer() {
     }
 
     res.json({
-      report: cachedPipeline.report,
-      predictionsJsonl: cachedPipeline.predRows
+      datasetMode: mode,
+      report: activePipeline.report,
+      predictionsJsonl: activePipeline.predRows
         .map((r) => JSON.stringify(r))
         .join('\n'),
       goldMetadata,
+      runtimeConfig: {
+        httpsProxy: configuredHttpsProxy,
+        port: PORT,
+        mode: 'hybrid-bm25-ontology-llm-fallback',
+        hasBundle: fs.existsSync(BUNDLE_PATH),
+      },
       mmsStats: {
         totalCategories: mmsList.length,
         totalChapters: Object.keys(chapterCounts).length,
@@ -134,6 +186,7 @@ async function startServer() {
   });
 
   app.post('/api/code', (req, res) => {
+    ensureDatasetLoaded();
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
     if (!text) {
       res.status(400).json({
@@ -149,6 +202,7 @@ async function startServer() {
   });
 
   app.post('/api/score-custom', (req, res) => {
+    ensureDatasetLoaded();
     const rawJsonl =
       typeof req.body?.jsonl === 'string' ? req.body.jsonl.trim() : '';
     if (!rawJsonl) {
@@ -180,6 +234,7 @@ async function startServer() {
   });
 
   app.get('/api/mms', (req, res) => {
+    ensureDatasetLoaded();
     const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
     const chapter = typeof req.query.chapter === 'string' ? req.query.chapter.trim() : '';
     const leafOnly = req.query.leafOnly === 'true';
@@ -210,12 +265,28 @@ async function startServer() {
   });
 
   app.get('/api/docs', (_req, res) => {
-    const briefPath = path.resolve(__dirname, 'BRIEF.md');
-    const decisionsPath = path.resolve(__dirname, 'DECISIONS.md');
+    const readSafe = (f: string) => {
+      const p = path.resolve(__dirname, f);
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : '';
+    };
     res.json({
-      brief: fs.existsSync(briefPath) ? fs.readFileSync(briefPath, 'utf-8') : '',
-      decisions: fs.existsSync(decisionsPath) ? fs.readFileSync(decisionsPath, 'utf-8') : '',
+      readme: readSafe('README.md'),
+      decisions: readSafe('DECISIONS.md'),
+      brief: readSafe('BRIEF.md'),
+      dockerfile: readSafe('Dockerfile'),
+      dockerCompose: readSafe('docker-compose.yml'),
+      coderPy: readSafe('coder.py'),
+      httpsProxy: configuredHttpsProxy,
+      hasBundle: fs.existsSync(BUNDLE_PATH),
     });
+  });
+
+  app.get('/api/download-bundle', (_req, res) => {
+    if (!fs.existsSync(BUNDLE_PATH)) {
+      res.status(404).json({ error: 'Git bundle file not found.' });
+      return;
+    }
+    res.download(BUNDLE_PATH, 'sugen-icd11.bundle');
   });
 
   if (process.env.NODE_ENV !== 'production') {
@@ -233,7 +304,15 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`Server listening on http://0.0.0.0:${PORT} (HTTPS_PROXY=${configuredHttpsProxy})`);
+    setTimeout(() => {
+      try {
+        getDevPipeline(false);
+        getCombinedPipeline(false);
+      } catch (err) {
+        console.error('Background dataset warmup error:', err);
+      }
+    }, 10);
   });
 }
 

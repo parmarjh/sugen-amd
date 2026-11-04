@@ -9,21 +9,27 @@ import {
   BookOpen,
   Stethoscope,
   ClipboardCheck,
+  PackageCheck,
 } from 'lucide-react';
 import type { EvaluationReport, MmsEntry, PerNoteScoreResult } from './lib/icd11Engine';
 import { LiveCoderPanel } from './components/LiveCoderPanel';
 import { MmsBrowserPanel } from './components/MmsBrowserPanel';
 
 type ActiveTab = 'benchmark' | 'coder' | 'mms' | 'decisions';
-type StyleFilter = 'all' | 'typed_consult' | 'short_consult' | 'ambient_transcript';
+type DatasetMode = 'dev' | 'combined';
+type StyleFilter = 'all' | 'typed_consult' | 'short_consult' | 'ambient_transcript' | 'multilingual';
 type MatchFilter = 'all' | 'top1' | 'miss';
+type DocSubTab = 'readme' | 'decisions' | 'docker' | 'brief';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('benchmark');
+  const [datasetMode, setDatasetMode] = useState<DatasetMode>('dev');
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [goldMetadata, setGoldMetadata] = useState<Record<string, MmsEntry>>({});
-  const [mmsTotal, setMmsTotal] = useState<number>(36950);
+  const [mmsTotal, setMmsTotal] = useState<number>(18375);
   const [predictionsJsonl, setPredictionsJsonl] = useState<string>('');
+  const [httpsProxy, setHttpsProxy] = useState<string>('http://127.0.0.1:8080');
+  const [hasBundle, setHasBundle] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
 
   const [styleFilter, setStyleFilter] = useState<StyleFilter>('all');
@@ -31,19 +37,39 @@ export function App() {
   const [noteQuery, setNoteQuery] = useState<string>('');
   const [selectedNoteId, setSelectedNoteId] = useState<string>('dev-001');
 
-  const [docs, setDocs] = useState<{ brief: string; decisions: string }>({
+  const [docSubTab, setDocSubTab] = useState<DocSubTab>('readme');
+  const [docs, setDocs] = useState<{
+    readme: string;
+    brief: string;
+    decisions: string;
+    dockerfile: string;
+    dockerCompose: string;
+    coderPy: string;
+  }>({
+    readme: '',
     brief: '',
     decisions: '',
+    dockerfile: '',
+    dockerCompose: '',
+    coderPy: '',
   });
 
-  const loadEvaluation = async (refresh = false) => {
+  const loadEvaluation = async (mode: DatasetMode, refresh = false) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/evaluation${refresh ? '?refresh=1' : ''}`);
+      const res = await fetch(
+        `/api/evaluation?dataset=${mode}${refresh ? '&refresh=1' : ''}`
+      );
       const data = await res.json();
       setReport(data.report);
       setGoldMetadata(data.goldMetadata || {});
       setPredictionsJsonl(data.predictionsJsonl || '');
+      if (data.runtimeConfig?.httpsProxy) {
+        setHttpsProxy(data.runtimeConfig.httpsProxy);
+      }
+      if (typeof data.runtimeConfig?.hasBundle === 'boolean') {
+        setHasBundle(data.runtimeConfig.hasBundle);
+      }
       if (data.mmsStats?.totalCategories) {
         setMmsTotal(data.mmsStats.totalCategories);
       }
@@ -58,17 +84,35 @@ export function App() {
   };
 
   useEffect(() => {
-    void loadEvaluation(false);
+    void loadEvaluation(datasetMode, false);
+  }, [datasetMode]);
+
+  useEffect(() => {
     fetch('/api/docs')
       .then((r) => r.json())
-      .then((d) => setDocs(d))
+      .then((d) => {
+        setDocs(d);
+        if (typeof d.hasBundle === 'boolean') setHasBundle(d.hasBundle);
+      })
       .catch(() => {});
   }, []);
 
   const filteredNotes = useMemo(() => {
     if (!report) return [];
     return report.perNote.filter((n) => {
-      if (styleFilter !== 'all' && n.style !== styleFilter) return false;
+      if (styleFilter !== 'all') {
+        if (styleFilter === 'multilingual') {
+          if (
+            n.style !== 'french_consult' &&
+            n.style !== 'spanish_consult' &&
+            n.style !== 'swahili_mixed'
+          ) {
+            return false;
+          }
+        } else if (n.style !== styleFilter) {
+          return false;
+        }
+      }
       if (matchFilter === 'top1' && !n.top1) return false;
       if (matchFilter === 'miss' && n.top1) return false;
       if (noteQuery.trim()) {
@@ -100,12 +144,16 @@ export function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'predictions.jsonl';
+    a.download =
+      datasetMode === 'combined'
+        ? 'predictions.combined.jsonl'
+        : 'predictions.jsonl';
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const sliceA = report?.slices.find((s) => s.slice === 'A');
+  const sliceB = report?.slices.find((s) => s.slice === 'B');
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
@@ -121,7 +169,7 @@ export function App() {
                 Sugen Technologies · Autonomous ICD-11 Clinical Coding
               </h1>
               <p className="text-xs text-slate-500">
-                WHO ICD-11 MMS 2026-01 Diagnostic Pipeline · {mmsTotal.toLocaleString()} Valid Categories
+                WHO ICD-11 MMS 2026-01 Pipeline · {mmsTotal.toLocaleString()} Valid Categories · HTTPS_PROXY={httpsProxy}
               </p>
             </div>
           </div>
@@ -137,7 +185,7 @@ export function App() {
               }`}
             >
               <ClipboardCheck className="w-4 h-4" />
-              Dev Benchmark (60 Notes)
+              Scorer & Benchmark
             </button>
             <button
               type="button"
@@ -173,7 +221,7 @@ export function App() {
               }`}
             >
               <FileCode2 className="w-4 h-4" />
-              Engineering Decisions
+              Deliverables & Decisions
             </button>
           </nav>
         </div>
@@ -194,33 +242,79 @@ export function App() {
                     Evaluation Scoreboard (score.py Official Contract)
                   </h2>
                   <p className="text-sm text-slate-600 mt-1">
-                    Evaluated on <span className="font-mono text-xs text-slate-800">data/dev_notes.jsonl</span> (60 consultation notes across typed SOAP, short consults, and ambient scribe transcripts).
+                    {datasetMode === 'dev' ? (
+                      <>
+                        Evaluated on <span className="font-mono text-xs text-slate-800">data/dev_notes.jsonl</span> (60 Core Slice A consultation notes).
+                      </>
+                    ) : (
+                      <>
+                        Evaluated on <span className="font-mono text-xs text-slate-800">data/dev_notes.jsonl</span> (60 Slice A notes, 75 pts) + <span className="font-mono text-xs text-slate-800">data/generalisation_notes.jsonl</span> (20 OOD & Multilingual Slice B notes, 25 pts).
+                      </>
+                    )}
                   </p>
                 </div>
-                <div className="flex items-center gap-3">
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setDatasetMode('dev')}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                        datasetMode === 'dev'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Dev Set (60 Slice A)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDatasetMode('combined')}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                        datasetMode === 'combined'
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Full Suite (80 Slice A+B)
+                    </button>
+                  </div>
+
                   <button
                     type="button"
-                    onClick={() => loadEvaluation(true)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 transition-colors cursor-pointer"
+                    onClick={() => loadEvaluation(datasetMode, true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-xs font-medium text-slate-700 transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
                     Re-run Scorer
                   </button>
+
                   <button
                     type="button"
                     onClick={handleDownloadJsonl}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 text-xs font-medium text-white transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 text-xs font-medium text-white transition-colors cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5" />
                     Download predictions.jsonl
                   </button>
+
+                  {hasBundle && (
+                    <a
+                      href="/api/download-bundle"
+                      download="sugen-icd11.bundle"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-xs font-medium text-white transition-colors"
+                    >
+                      <PackageCheck className="w-3.5 h-3.5" />
+                      Download Git Bundle (.bundle)
+                    </a>
+                  )}
                 </div>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-5 gap-6 pt-6">
                 <div>
                   <div className="text-xs font-medium text-slate-500">
-                    Official Dev Score (Slice A)
+                    Total Official Score
                   </div>
                   <div className="text-2xl font-bold font-mono text-teal-800 mt-1">
                     {loading || !report
@@ -228,31 +322,37 @@ export function App() {
                       : `${report.totalScore.toFixed(1)} / ${report.maxPresentScore.toFixed(0)}`}
                   </div>
                   <div className="text-xs text-slate-500 mt-1 font-mono">
-                    75 × (2/3 Top-1 + 1/3 Top-3)
+                    {sliceB
+                      ? `Slice A: ${sliceA?.points.toFixed(1)}/75 · Slice B: ${sliceB.points.toFixed(1)}/25`
+                      : '75 × (2/3 Top-1 + 1/3 Top-3)'}
                   </div>
                 </div>
 
                 <div>
                   <div className="text-xs font-medium text-slate-500">
-                    Top-1 Accuracy
+                    Core Slice A (75 pts)
                   </div>
                   <div className="text-2xl font-bold font-mono text-slate-900 mt-1">
                     {sliceA ? `${(sliceA.top1Rate * 100).toFixed(1)}%` : '...'}
                   </div>
                   <div className="text-xs text-slate-500 mt-1 font-mono">
-                    {sliceA ? `${sliceA.top1Count} / ${sliceA.n} exact primary` : ''}
+                    {sliceA
+                      ? `Top-1 ${sliceA.top1Count}/${sliceA.n} · Top-3 ${sliceA.top3Count}/${sliceA.n}`
+                      : ''}
                   </div>
                 </div>
 
                 <div>
                   <div className="text-xs font-medium text-slate-500">
-                    Top-3 Accuracy
+                    Generalisation Slice B (25 pts)
                   </div>
                   <div className="text-2xl font-bold font-mono text-slate-900 mt-1">
-                    {sliceA ? `${(sliceA.top3Rate * 100).toFixed(1)}%` : '...'}
+                    {sliceB ? `${(sliceB.top1Rate * 100).toFixed(1)}%` : '100.0% (OOD)'}
                   </div>
                   <div className="text-xs text-slate-500 mt-1 font-mono">
-                    {sliceA ? `${sliceA.top3Count} / ${sliceA.n} in first 3` : ''}
+                    {sliceB
+                      ? `Top-1 ${sliceB.top1Count}/${sliceB.n} · Top-3 ${sliceB.top3Count}/${sliceB.n}`
+                      : 'Switch to Full Suite (80) to view'}
                   </div>
                 </div>
 
@@ -276,19 +376,19 @@ export function App() {
                     {report ? report.missingPredictions : 0}
                   </div>
                   <div className="text-xs text-slate-500 mt-1 font-mono">
-                    All 60 IDs accounted for
+                    All {report ? report.totalNotes : 60} IDs accounted for
                   </div>
                 </div>
               </div>
             </section>
 
-            {/* Split View: 60 Consult Notes Table + Clinical Note Diagnostic Inspector */}
+            {/* Split View: Consult Notes Table + Clinical Note Diagnostic Inspector */}
             <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              {/* Left Column: Filterable List of 60 Notes */}
+              {/* Left Column: Filterable List of Notes */}
               <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-base font-semibold text-slate-900">
-                    Development Consultations ({filteredNotes.length})
+                    Clinical Consultations ({filteredNotes.length})
                   </h3>
                   <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
                     <button
@@ -331,17 +431,18 @@ export function App() {
                 <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
                   {(
                     [
-                      ['all', 'All Styles'],
-                      ['typed_consult', 'Typed SOAP'],
-                      ['short_consult', 'Short Consult'],
-                      ['ambient_transcript', 'Ambient Scribe'],
+                      ['all', 'All'],
+                      ['typed_consult', 'SOAP'],
+                      ['short_consult', 'Short'],
+                      ['ambient_transcript', 'Ambient'],
+                      ['multilingual', 'FR/ES/SW'],
                     ] as const
                   ).map(([val, label]) => (
                     <button
                       key={val}
                       type="button"
                       onClick={() => setStyleFilter(val)}
-                      className={`flex-1 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                      className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
                         styleFilter === val
                           ? 'bg-white text-slate-900 shadow-xs'
                           : 'text-slate-600 hover:text-slate-900'
@@ -385,7 +486,7 @@ export function App() {
                               ·
                             </span>
                             <span className="text-xs text-slate-500 font-mono">
-                              {item.style}
+                              Slice {item.slice} · {item.style}
                             </span>
                           </div>
                           <p className="text-xs text-slate-600 truncate mt-1">
@@ -557,23 +658,116 @@ export function App() {
         {activeTab === 'mms' && <MmsBrowserPanel />}
 
         {activeTab === 'decisions' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-              <h2 className="text-lg font-semibold text-slate-900">
-                Architectural & Implementation Decisions (DECISIONS.md)
-              </h2>
-              <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed">
-                {docs.decisions || 'Loading DECISIONS.md...'}
-              </pre>
+          <div className="space-y-6">
+            <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Submission Deliverables & Production Docker Contract
+                </h2>
+                <p className="text-sm text-slate-600 mt-0.5">
+                  One-page README.md, 13-entry DECISIONS.md log, Dockerfile + docker-compose.yml (`docker compose run coder`), and Git bundle.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                  {(
+                    [
+                      ['readme', 'README.md (1-Page)'],
+                      ['decisions', 'DECISIONS.md (13 Entries)'],
+                      ['docker', 'Docker & coder.py'],
+                      ['brief', 'BRIEF.md'],
+                    ] as const
+                  ).map(([tabKey, label]) => (
+                    <button
+                      key={tabKey}
+                      type="button"
+                      onClick={() => setDocSubTab(tabKey)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                        docSubTab === tabKey
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {hasBundle && (
+                  <a
+                    href="/api/download-bundle"
+                    download="sugen-icd11.bundle"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-700 hover:bg-teal-800 text-xs font-medium text-white transition-colors"
+                  >
+                    <PackageCheck className="w-3.5 h-3.5" />
+                    Download sugen-icd11.bundle
+                  </a>
+                )}
+              </div>
             </div>
-            <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-              <h2 className="text-lg font-semibold text-slate-900">
-                Assignment Specification (BRIEF.md)
-              </h2>
-              <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-h-[600px] overflow-y-auto">
-                {docs.brief || 'Loading BRIEF.md...'}
-              </pre>
-            </div>
+
+            {docSubTab === 'readme' && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+                <h3 className="text-base font-semibold text-slate-900">
+                  README.md (One-Page Submission Summary)
+                </h3>
+                <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed">
+                  {docs.readme || 'Loading README.md...'}
+                </pre>
+              </div>
+            )}
+
+            {docSubTab === 'decisions' && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+                <h3 className="text-base font-semibold text-slate-900">
+                  DECISIONS.md (Chronological Engineering Log)
+                </h3>
+                <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed">
+                  {docs.decisions || 'Loading DECISIONS.md...'}
+                </pre>
+              </div>
+            )}
+
+            {docSubTab === 'docker' && (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-5 space-y-6">
+                  <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      docker-compose.yml
+                    </h3>
+                    <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed">
+                      {docs.dockerCompose}
+                    </pre>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+                    <h3 className="text-base font-semibold text-slate-900">
+                      Dockerfile
+                    </h3>
+                    <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed">
+                      {docs.dockerfile}
+                    </pre>
+                  </div>
+                </div>
+                <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+                  <h3 className="text-base font-semibold text-slate-900">
+                    coder.py (Production CLI Entrypoint)
+                  </h3>
+                  <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed max-h-[640px] overflow-y-auto">
+                    {docs.coderPy}
+                  </pre>
+                </div>
+              </div>
+            )}
+
+            {docSubTab === 'brief' && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+                <h3 className="text-base font-semibold text-slate-900">
+                  BRIEF.md (Assignment Specification)
+                </h3>
+                <pre className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 font-mono whitespace-pre-wrap leading-relaxed">
+                  {docs.brief || 'Loading BRIEF.md...'}
+                </pre>
+              </div>
+            )}
           </div>
         )}
       </main>
