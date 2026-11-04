@@ -1,11 +1,35 @@
-<div align="center">
+# Sugen Technologies - ICD-11 Coding at Real Scale
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Autonomous ICD-11 diagnostic coding system for clinical outpatient notes and ambient scribe transcripts.
 
-  <h1>Built with AI Studio</h2>
+## Overview
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+This repository contains the clinical note diagnostic coding pipeline for Sugen Technologies' engineering assessment. Given clinical consultation text, the system predicts the most specific, appropriate ICD-11 MMS diagnostic categories (Chapters 01 to 26).
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Repository Structure
 
-</div>
+```
+├── data/
+│   ├── dev_notes.jsonl            # 60 development clinical consult notes with gold codes
+│   ├── mms-2026-01.json           # ICD-11 MMS 2026-01 categories (valid codes)
+│   └── predictions.example.jsonl  # Example prediction format
+├── score.py                       # Evaluation and scoring script
+├── BRIEF.md                       # Assignment specification
+├── DECISIONS.md                   # Chronological decision log tracked per commit
+├── .gitignore                     # Git ignore rules
+└── README.md                      # Project documentation and summary
+```
+
+## Running the Scorer
+
+```bash
+python score.py --gold data/dev_notes.jsonl --pred data/predictions.example.jsonl --mms data/mms-2026-01.json
+```
+
+## Production Run Contract
+
+From a clean clone:
+
+```bash
+docker compose run coder /in/notes.jsonl /out/predictions.jsonl
+```

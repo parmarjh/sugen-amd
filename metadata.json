@@ -1,0 +1,5 @@
+{
+  "name": "Sugen ICD-11 Clinical Coding Workbench",
+  "description": "Autonomous ICD-11 MMS 2026-01 diagnostic coding pipeline, live clinical note coder, ontology browser, and evaluation scorer for outpatient notes and ambient scribe transcripts.",
+  "requestFramePermissions": []
+}
