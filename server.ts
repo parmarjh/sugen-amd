@@ -8,6 +8,8 @@ import {
   normalizeStem,
   predictIcd11Codes,
   scorePredictions,
+  traceNoteAlgorithm,
+  getHierarchySubtree,
   type CodedCandidate,
   type DevNote,
   type EvaluationReport,
@@ -199,6 +201,26 @@ async function startServer() {
       candidates,
       codes: candidates.map((c) => c.code),
     });
+  });
+
+  app.post('/api/dsa-trace', (req, res) => {
+    ensureDatasetLoaded();
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+    if (!text) {
+      res.status(400).json({
+        error: 'Please provide clinical note text to trace.',
+      });
+      return;
+    }
+    const trace = traceNoteAlgorithm(text, mmsList, mmsByCode);
+    res.json({ trace });
+  });
+
+  app.get('/api/dsa-subtree', (req, res) => {
+    ensureDatasetLoaded();
+    const stem = typeof req.query.stem === 'string' ? req.query.stem.trim() : '1A07';
+    const subtree = getHierarchySubtree(stem, mmsList);
+    res.json({ subtree });
   });
 
   app.post('/api/score-custom', (req, res) => {

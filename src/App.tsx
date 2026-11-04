@@ -10,12 +10,14 @@ import {
   Stethoscope,
   ClipboardCheck,
   PackageCheck,
+  GitBranch,
 } from 'lucide-react';
 import type { EvaluationReport, MmsEntry, PerNoteScoreResult } from './lib/icd11Engine';
 import { LiveCoderPanel } from './components/LiveCoderPanel';
 import { MmsBrowserPanel } from './components/MmsBrowserPanel';
+import { AlgorithmDsaPanel } from './components/AlgorithmDsaPanel';
 
-type ActiveTab = 'benchmark' | 'coder' | 'mms' | 'decisions';
+type ActiveTab = 'benchmark' | 'coder' | 'dsa' | 'mms' | 'decisions';
 type DatasetMode = 'dev' | 'combined';
 type StyleFilter = 'all' | 'typed_consult' | 'short_consult' | 'ambient_transcript' | 'multilingual';
 type MatchFilter = 'all' | 'top1' | 'miss';
@@ -198,6 +200,18 @@ export function App() {
             >
               <Stethoscope className="w-4 h-4" />
               Live Clinical Coder
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('dsa')}
+              className={`inline-flex items-center gap-1.5 py-5 text-sm font-medium border-b-2 transition-colors cursor-pointer ${
+                activeTab === 'dsa'
+                  ? 'border-teal-700 text-teal-800'
+                  : 'border-transparent text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <GitBranch className="w-4 h-4" />
+              Algorithm & DSA Diagrams
             </button>
             <button
               type="button"
@@ -654,6 +668,8 @@ export function App() {
         )}
 
         {activeTab === 'coder' && <LiveCoderPanel />}
+
+        {activeTab === 'dsa' && <AlgorithmDsaPanel />}
 
         {activeTab === 'mms' && <MmsBrowserPanel />}
 
